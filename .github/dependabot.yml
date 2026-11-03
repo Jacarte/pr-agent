@@ -78,12 +78,6 @@ updates:
           - "*"
         update-types:
           - major
-    ignore:
-      # .github/workflows/pr-agent-review.yaml pins this action to a commit on
-      # `main`, not to a release. There is no version to bump to, and the
-      # documented behaviour for an untagged sha is to move it to whatever HEAD
-      # happens to be. Moving the self-review action is a deliberate act.
-      - dependency-name: Codium-ai/pr-agent
     commit-message:
       prefix: chore(ci)
 
@@ -101,7 +95,7 @@ updates:
     ignore:
       # Dockerfile.github_action_dockerhub builds FROM this project's own
       # published image, tracked by a stage tag rather than a version.
-      - dependency-name: pragent/pr-agent
+      - dependency-name: jacarte/pr-agent
     commit-message:
       prefix: chore(docker)
 
