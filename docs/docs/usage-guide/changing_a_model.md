@@ -84,6 +84,95 @@ PR-Agent captures request settings and supported provider environment values per
 Process-wide routing fallbacks such as `litellm.api_base`, `litellm.api_version`, `litellm.organization`, `litellm.vertex_project`, and `litellm.vertex_location` can be rejected even when unchanged. Use the corresponding PR-Agent settings (`OPENAI.API_BASE`, `OPENAI.API_VERSION`, `OPENAI.ORG`, `VERTEXAI.VERTEX_PROJECT`, and `VERTEXAI.VERTEX_LOCATION`) or supported provider environment variables, and clear the corresponding LiteLLM globals even when they match the intended routing. Use `LITELLM.EXTRA_HEADERS` instead of `litellm.headers`.
 :::
 
+### Codex / ChatGPT backend (optional)
+
+LiteLLM remains the default. To use the official `openai-codex` Python SDK instead,
+install the optional `codex` extra from this checkout and set the **process environment**
+variable `PR_AGENT_AI_BACKEND=codex`. Repository settings and PR comments cannot select
+this backend. An explicitly injected handler factory still takes precedence.
+The `all` extra and published CLI/GitHub Action images do not include Codex.
+
+The SDK includes its matching Codex CLI runtime and reuses Codex's own login session
+(`~/.codex/auth.json`, or `auth.json` under `CODEX_HOME`). Authenticate using Codex's
+supported login flow first; PR-Agent does not parse OAuth tokens. GitHub authentication
+is separate and still required to fetch a PR and publish its review.
+
+From the repository root, with Python 3.12+ and uv 0.13.5+:
+
+```bash
+uv sync --frozen --extra codex --extra github
+export PR_AGENT_AI_BACKEND=codex
+export GITHUB__DEPLOYMENT_TYPE=user
+# Supply GITHUB__USER_TOKEN securely through your environment.
+export CONFIG__MODEL=gpt-5.4
+export CONFIG__FALLBACK_MODELS='[]'
+export CONFIG__CUSTOM_MODEL_MAX_TOKENS=32000
+export CONFIG__VERBOSITY_LEVEL=0
+uv run --frozen --extra codex --extra github pr-agent --pr_url https://github.com/OWNER/REPO/pull/123 review
+```
+
+Choose a **Codex model ID available to your account**, not a LiteLLM provider-prefixed
+ID. Set all configured models (including optional weak/reasoning models and fallbacks)
+to Codex-compatible IDs, or disable fallbacks as above. `32000` is a conservative input
+budget example, not a claim about the model's context capacity; verify your model's
+limit. Fallbacks stay on Codex, not LiteLLM. `/doctor` currently probes LiteLLM and is
+not a Codex authentication check.
+
+The adapter supports text only and ignores temperature. It uses a fresh ephemeral
+thread in an empty temporary directory for each completion, with read-only sandboxing
+and approvals denied. Failed, interrupted, or empty turns raise errors for PR-Agent's
+fallback handling. Token metrics use the thread's total usage when available; no USD
+price is invented. The timeout defaults to `config.ai_timeout`; the deployment variable
+`PR_AGENT_CODEX_TIMEOUT_SECONDS` overrides it (positive seconds, at most 3600). Timeout
+or cancellation requests SDK cleanup; subprocess shutdown may take additional time.
+
+:::warning[Trusted PR content only]
+Read-only sandboxing, denied approvals, and the instruction not to use tools **do not
+isolate credentials**. Codex can still have read-only tools and inherit environment
+variables, and prompt injection can try to read or disclose credentials through the
+response or network. Human operators must **not run this backend on untrusted PR
+content**, even when no PR code is checked out or executed. Trust the diff, descriptions,
+comments, repository context, runtime configuration, and installed dependencies. Use
+only trusted environments and follow your account's terms.
+:::
+
+#### Manual credential-bearing workflow
+
+[`.github/workflows/codex-review-manual.yml`](https://github.com/the-pr-agent/pr-agent/blob/main/.github/workflows/codex-review-manual.yml)
+is manual-only (`workflow_dispatch`), with no automatic PR triggers. On a trusted
+repository, preferably private:
+
+1. Review and protect the default branch and workflow. Configure the `CODEX_AUTH_JSON`
+   Actions secret from your authenticated Codex `auth.json`, without printing it:
+   `gh secret set CODEX_AUTH_JSON < ~/.codex/auth.json`.
+2. Review **all** target PR content yourself. A same-repository URL can still identify
+   a fork PR or otherwise untrusted content; URL validation is not a trust decision.
+3. Dispatch from the repository's **default branch**, enter exactly
+   `https://github.com/OWNER/REPO/pull/NUMBER` for this repository (no query, fragment,
+   trailing slash, or another repository), and affirm the trusted-content checkbox.
+   Non-default-branch dispatches are skipped. Change the workflow's model and context
+   budget on the protected default branch if the example does not match your account.
+
+The workflow explicitly checks out the default branch, never a PR head, on an ephemeral
+GitHub-hosted runner. It installs locked dependencies with `uv sync --frozen` before
+restoring auth, disables dependency caching, and uses job-scoped `contents: read` and
+`pull-requests: write` permissions. `GITHUB_TOKEN` is exposed as an environment variable
+only during review; checkout does not persist its credential. Repository config overlays
+are disabled for this run, with explicit model/fallback settings and low verbosity.
+
+Auth must be a nonempty JSON object. The workflow writes it without logging its content
+to a mode-600 file in a mode-700 `CODEX_HOME` under `RUNNER_TEMP`. An `always()` cleanup
+step removes that entire directory, including refreshed credentials and runtime state;
+there are no uploaded artifacts or caches. Cleanup cannot run after every possible
+runner failure, so the ephemeral runner is part of the lifecycle control, **not** a
+credential-isolation guarantee during inference.
+
+Runs sharing this workflow are serialized. Do not concurrently reuse the same credential
+elsewhere: refresh-token rotation can invalidate the saved Actions secret. Refreshed
+credentials are deliberately not persisted; update the secret securely when needed.
+Unit tests mock the SDK and workflow execution; they do not validate live login,
+refresh, inference, or sandbox behavior. Normal CI and Docker-only publishing are unchanged.
+
 ### OpenAI Flex Processing
 
 To reduce costs for non-urgent/background tasks, enable Flex Processing:

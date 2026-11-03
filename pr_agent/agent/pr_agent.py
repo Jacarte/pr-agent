@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+import os
 import shlex
 from functools import partial
 
@@ -333,9 +334,21 @@ def _record_token_metrics(action: str, git_provider: str) -> None:
         get_ai_calls_counter().add(details.num_ai_calls, labels)
 
 
+def _default_ai_handler():
+    """Select the deployment-controlled backend; preserve LiteLLM by default."""
+    backend = os.environ.get("PR_AGENT_AI_BACKEND", "litellm").strip().lower()
+    if backend == "litellm":
+        return LiteLLMAIHandler
+    if backend == "codex":
+        from pr_agent.algo.ai_handlers.codex_ai_handler import CodexAIHandler
+        return CodexAIHandler
+    raise ValueError(f"Unsupported PR_AGENT_AI_BACKEND: {backend!r}")
+
+
 class PRAgent:
-    def __init__(self, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
-        self.ai_handler = ai_handler  # handler factory passed to each tool when it is instantiated
+    def __init__(self, ai_handler: partial[BaseAiHandler,] | None = None):
+        # handler factory passed to each tool when it is instantiated
+        self.ai_handler = ai_handler if ai_handler is not None else _default_ai_handler()
 
     async def _handle_request(
         self, pr_url, request, notify=None, propagate_tool_errors: bool | None = None
