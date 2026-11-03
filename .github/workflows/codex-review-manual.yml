@@ -1,0 +1,132 @@
+# Trusted code AND trusted PR content only: read-only Codex tools can still read secrets.
+# Never add automatic PR triggers or check out the PR head in this credential-bearing job.
+name: Codex PR-Agent (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_url:
+        description: 'Canonical https://github.com/OWNER/REPO/pull/NUMBER URL in this repository'
+        required: true
+        type: string
+      trusted_content:
+        description: 'I reviewed and trust all PR content; Codex tools may read credentials'
+        required: true
+        default: false
+        type: boolean
+
+permissions: {}
+
+jobs:
+  review:
+    if: github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+    concurrency:
+      group: codex-chatgpt-login
+      cancel-in-progress: false
+    steps:
+      - name: Validate trusted dispatch and target
+        id: validate
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PR_URL: ${{ inputs.pr_url }}
+          TRUSTED_CONTENT: ${{ inputs.trusted_content }}
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          import os
+          import re
+
+          if (os.environ["GITHUB_EVENT_NAME"] != "workflow_dispatch"
+                  or os.environ["GITHUB_REF"] != "refs/heads/" + os.environ["DEFAULT_BRANCH"]):
+              raise SystemExit("Dispatch must use the repository default branch.")
+          if os.environ["TRUSTED_CONTENT"] != "true":
+              raise SystemExit("Only human-verified trusted PR content may be reviewed.")
+          url = os.environ["PR_URL"]
+          prefix = "https://github.com/" + os.environ["GITHUB_REPOSITORY"] + "/pull/"
+          if len(url) > 2048 or not re.fullmatch(re.escape(prefix) + r"[1-9][0-9]*", url):
+              raise SystemExit("Expected a canonical same-repository GitHub PR URL.")
+          PYCODE
+
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: refs/heads/${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          version: '0.13.5'
+          enable-cache: false
+
+      - name: Install adapter before restoring credentials
+        id: install
+        run: uv sync --frozen --no-dev --extra codex --extra github --python 3.12
+
+      - name: Restore Codex login
+        id: auth
+        shell: bash
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          CODEX_HOME: ${{ runner.temp }}/pr-agent-codex
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -m 700 "$CODEX_HOME"
+          python3 - <<'PYCODE'
+          import json
+          import os
+          from pathlib import Path
+
+          try:
+              auth = json.loads(os.environ["CODEX_AUTH_JSON"])
+          except (ValueError, KeyError):
+              raise SystemExit("CODEX_AUTH_JSON must contain valid JSON.") from None
+          if not isinstance(auth, dict) or not auth:
+              raise SystemExit("CODEX_AUTH_JSON must contain a nonempty JSON object.")
+          with (Path(os.environ["CODEX_HOME"]) / "auth.json").open("x") as handle:
+              json.dump(auth, handle)
+          PYCODE
+
+      - name: Review trusted PR content
+        id: review
+        env:
+          PR_URL: ${{ inputs.pr_url }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CODEX_HOME: ${{ runner.temp }}/pr-agent-codex
+          PR_AGENT_AI_BACKEND: codex
+          PR_AGENT_CODEX_TIMEOUT_SECONDS: '480'
+          LOG_LEVEL: WARNING
+          LITELLM_LOCAL_MODEL_COST_MAP: 'True'
+        shell: bash
+        run: |
+          .venv/bin/python - <<'PYCODE'
+          import os
+          from pr_agent import cli
+          from pr_agent.config_loader import get_settings
+
+          settings = get_settings()
+          settings.set("github.user_token", os.environ["GITHUB_TOKEN"])
+          settings.set("github.deployment_type", "user")
+          # Do not let repository config overlays change this credential-bearing run.
+          settings.set("config.use_repo_settings_file", False)
+          settings.set("config.model", "gpt-5.4")
+          settings.set("config.fallback_models", [])
+          settings.set("config.custom_model_max_tokens", 32000)
+          settings.set("config.verbosity_level", 0)
+          settings.set("config.propagate_tool_errors", True)
+          raise SystemExit(cli.run_command(os.environ["PR_URL"], "/review") or 0)
+          PYCODE
+
+      - name: Remove Codex credentials and runtime state
+        id: cleanup
+        if: always()
+        shell: bash
+        env:
+          CODEX_HOME: ${{ runner.temp }}/pr-agent-codex
+        run: rm -rf -- "$CODEX_HOME"

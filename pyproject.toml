@@ -92,6 +92,8 @@ include = [
 ] # include pr_agent and any sub-packages it finds under it.
 
 [project.optional-dependencies]
+# Optional Codex backend; deliberately excluded from the Docker/provider "all" extra.
+codex = ["openai-codex>=0.154.0,<1"]
 # Git/provider integrations are optional so a plain package install does not pull every SDK.
 github = ["PyGithub>=2.10,<3"]
 gitlab = ["python-gitlab==8.6.0"]

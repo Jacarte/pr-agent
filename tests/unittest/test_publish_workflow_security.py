@@ -12,6 +12,83 @@ INVALID_VERSION_ERROR = (
 )
 
 
+def test_release_publishes_only_cli_and_github_action_images() -> None:
+    workflow_text = PUBLISH_WORKFLOW.read_text()
+    workflow = yaml.safe_load(workflow_text)
+    jobs = workflow["jobs"]
+
+    assert set(jobs) == {"prepare", "publish-docker", "finalize"}
+    assert "pypi" not in workflow_text.lower()
+    docker_job = jobs["publish-docker"]
+    assert docker_job["strategy"]["matrix"] == {
+        "include": [
+            {"dockerfile": "docker/Dockerfile", "target": "cli", "suffix": "", "rolling": "latest"},
+            {
+                "dockerfile": "docker/Dockerfile",
+                "target": "github_action",
+                "suffix": "github_action",
+                "rolling": "github_action",
+            },
+        ]
+    }
+    push_step = next(step for step in docker_job["steps"] if step.get("id") == "push")
+    assert push_step["with"]["push"] is True
+    assert push_step["with"]["file"] == "${{ matrix.dockerfile }}"
+    assert push_step["with"]["target"] == "${{ matrix.target }}"
+    assert push_step["with"]["tags"] == "${{ steps.tags.outputs.tags }}"
+    finalize = jobs["finalize"]
+    assert finalize["needs"] == ["prepare", "publish-docker"]
+    assert "needs.prepare.result == 'success'" in finalize["if"]
+    assert "needs.publish-docker.result == 'success'" in finalize["if"]
+
+
+@pytest.mark.parametrize(
+    ("target", "expected_tags"),
+    [
+        ("cli", "pragent/pr-agent:1.2.3,pragent/pr-agent:latest"),
+        ("github_action", "pragent/pr-agent:1.2.3-github_action,pragent/pr-agent:github_action"),
+    ],
+)
+def test_release_image_tags(tmp_path: Path, target: str, expected_tags: str) -> None:
+    workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text())
+    docker_job = workflow["jobs"]["publish-docker"]
+    image = next(image for image in docker_job["strategy"]["matrix"]["include"] if image["target"] == target)
+    tag_step = next(step for step in docker_job["steps"] if step.get("id") == "tags")
+    script = tag_step["run"].replace("${{ needs.prepare.outputs.version }}", "1.2.3")
+    for key in ("suffix", "rolling"):
+        script = script.replace("${{ matrix." + key + " }}", image[key])
+    output = tmp_path / "github-output"
+
+    result = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", script],
+        env={**os.environ, "GITHUB_OUTPUT": str(output)},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output.read_text() == f"tags={expected_tags}\n"
+
+
+def test_normal_ci_still_builds_and_tests_without_publishing() -> None:
+    workflow = yaml.safe_load(
+        (REPOSITORY_ROOT / ".github" / "workflows" / "build-and-test.yaml").read_text()
+    )
+    jobs = workflow["jobs"]
+    steps = jobs["build-and-test"]["steps"]
+    builds = [step for step in steps if step.get("uses", "").startswith("docker/build-push-action@")]
+
+    assert {step["with"]["target"] for step in builds} == {"test", "github_app"}
+    assert all(step["with"]["push"] is False and step["with"]["load"] is True for step in builds)
+    assert any("tests/packaging/test_help_docs_package.py" in step.get("run", "") for step in steps)
+    assert any("pytest -v tests/unittest" in step.get("run", "") for step in steps)
+    assert any(step.get("id") == "smoke" for step in steps)
+    native = jobs["unit-tests-native"]
+    assert native["strategy"]["matrix"]["python-version"] == ["3.12", "3.13", "3.14"]
+    assert any("pytest -v tests/unittest" in step.get("run", "") for step in native["steps"])
+
+
 def test_release_version_input_is_not_interpolated_into_shell() -> None:
     workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text())
     ref_guard_step = next(
