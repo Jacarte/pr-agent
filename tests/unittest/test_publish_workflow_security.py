@@ -36,6 +36,12 @@ def test_release_publishes_only_cli_and_github_action_images() -> None:
     assert push_step["with"]["file"] == "${{ matrix.dockerfile }}"
     assert push_step["with"]["target"] == "${{ matrix.target }}"
     assert push_step["with"]["tags"] == "${{ steps.tags.outputs.tags }}"
+    provenance_step = next(
+        step for step in docker_job["steps"] if step.get("uses", "").startswith("actions/attest-build-provenance@")
+    )
+    assert provenance_step["with"]["subject-name"] == "index.docker.io/jacarte/pr-agent"
+    assert provenance_step["with"]["subject-digest"] == "${{ steps.push.outputs.digest }}"
+    assert provenance_step["with"]["push-to-registry"] is True
     finalize = jobs["finalize"]
     assert finalize["needs"] == ["prepare", "publish-docker"]
     assert "needs.prepare.result == 'success'" in finalize["if"]
@@ -45,8 +51,8 @@ def test_release_publishes_only_cli_and_github_action_images() -> None:
 @pytest.mark.parametrize(
     ("target", "expected_tags"),
     [
-        ("cli", "pragent/pr-agent:1.2.3,pragent/pr-agent:latest"),
-        ("github_action", "pragent/pr-agent:1.2.3-github_action,pragent/pr-agent:github_action"),
+        ("cli", "jacarte/pr-agent:1.2.3,jacarte/pr-agent:latest"),
+        ("github_action", "jacarte/pr-agent:1.2.3-github_action,jacarte/pr-agent:github_action"),
     ],
 )
 def test_release_image_tags(tmp_path: Path, target: str, expected_tags: str) -> None:
@@ -87,6 +93,32 @@ def test_normal_ci_still_builds_and_tests_without_publishing() -> None:
     native = jobs["unit-tests-native"]
     assert native["strategy"]["matrix"]["python-version"] == ["3.12", "3.13", "3.14"]
     assert any("pytest -v tests/unittest" in step.get("run", "") for step in native["steps"])
+
+
+def test_docs_ci_builds_and_checks_without_publishing() -> None:
+    workflow = yaml.safe_load(
+        (REPOSITORY_ROOT / ".github" / "workflows" / "docs-ci.yaml").read_text()
+    )
+
+    assert workflow["permissions"] == {"contents": "read"}
+    assert set(workflow["jobs"]) == {"docs"}
+    docs_job = workflow["jobs"]["docs"]
+    assert docs_job["permissions"] == {"contents": "read"}
+    steps = docs_job["steps"]
+    assert [step["uses"].split("@", 1)[0] for step in steps if "uses" in step] == [
+        "actions/checkout", "actions/setup-node"
+    ]
+    setup_node = next(step for step in steps if step.get("uses", "").startswith("actions/setup-node@"))
+    assert setup_node["with"] == {
+        "node-version": 22,
+        "cache": "npm",
+        "cache-dependency-path": "docs/package-lock.json",
+    }
+    assert [(step["run"], step.get("working-directory")) for step in steps if "run" in step] == [
+        ("npm ci", "docs"),
+        ("npm run build", "docs"),
+        ("python3 scripts/check_docs_urls.py", None),
+    ]
 
 
 def test_release_version_input_is_not_interpolated_into_shell() -> None:

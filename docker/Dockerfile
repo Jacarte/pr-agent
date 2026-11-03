@@ -81,6 +81,7 @@ COPY tests tests
 # workflow edit does not invalidate this layer.
 COPY .github/workflows/publish.yml .github/workflows/publish.yml
 COPY .github/workflows/build-and-test.yaml .github/workflows/build-and-test.yaml
+COPY .github/workflows/docs-ci.yaml .github/workflows/docs-ci.yaml
 COPY .github/workflows/codex-review-manual.yml .github/workflows/codex-review-manual.yml
 COPY docker/Dockerfile docker/Dockerfile
 COPY docker/Dockerfile.lambda docker/Dockerfile.lambda

@@ -130,12 +130,12 @@ jobs:
           SUFFIX="${{ matrix.suffix }}"
           ROLLING="${{ matrix.rolling }}"
           if [ -z "$SUFFIX" ]; then
-            TAGS="pragent/pr-agent:${V}"
+            TAGS="jacarte/pr-agent:${V}"
           else
-            TAGS="pragent/pr-agent:${V}-${SUFFIX}"
+            TAGS="jacarte/pr-agent:${V}-${SUFFIX}"
           fi
           if [ -n "$ROLLING" ]; then
-            TAGS="${TAGS},pragent/pr-agent:${ROLLING}"
+            TAGS="${TAGS},jacarte/pr-agent:${ROLLING}"
           fi
           echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
 
@@ -153,7 +153,7 @@ jobs:
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
-          subject-name: index.docker.io/pragent/pr-agent
+          subject-name: index.docker.io/jacarte/pr-agent
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
