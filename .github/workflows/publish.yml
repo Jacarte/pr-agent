@@ -67,8 +67,7 @@ jobs:
             echo "::error::SemVer build metadata is not supported for releases."
             exit 1
           fi
-          # Keep version-suffix tags within Docker's 128-character limit:
-          # 128 - 1 separator - 24 ("bitbucket_server_webhook") = 103.
+          # Keep version-suffix tags within Docker's 128-character limit.
           if (( ${#VERSION} > 103 )); then
             echo "::error::Version is too long for release image tags (maximum 103 characters)."
             exit 1
@@ -78,36 +77,6 @@ jobs:
             echo "tag=$TAG"
             echo "sha=$GITHUB_SHA"
           } >> "$GITHUB_OUTPUT"
-
-  publish-pypi:
-    needs: prepare
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment: release
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: ${{ needs.prepare.outputs.sha }}
-
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
-        with:
-          python-version: '3.12'
-
-      - name: Set version in pyproject.toml
-        run: python scripts/set_pyproject_version.py "${{ needs.prepare.outputs.version }}"
-
-      - name: Build distributions
-        run: |
-          python -m pip install --upgrade pip build
-          python -m build
-
-      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
-          # Re-running the workflow for the same version (e.g. after a
-          # transient registry failure) should not fail because the wheel
-          # already exists on PyPI.
-          skip-existing: true
 
   publish-docker:
     needs: prepare
@@ -127,49 +96,9 @@ jobs:
             suffix: ''
             rolling: latest
           - dockerfile: docker/Dockerfile
-            target: github_app
-            suffix: github_app
-            rolling: ''
-          - dockerfile: docker/Dockerfile
-            target: bitbucket_app
-            suffix: bitbucket_app
-            rolling: ''
-          - dockerfile: docker/Dockerfile
-            target: bitbucket_server_webhook
-            suffix: bitbucket_server_webhook
-            rolling: bitbucket_server_webhook
-          - dockerfile: docker/Dockerfile
-            target: github_polling
-            suffix: github_polling
-            rolling: ''
-          - dockerfile: docker/Dockerfile
-            target: gitlab_webhook
-            suffix: gitlab_webhook
-            rolling: gitlab_webhook
-          - dockerfile: docker/Dockerfile
-            target: azure_devops_webhook
-            suffix: azure_devops_webhook
-            rolling: ''
-          - dockerfile: docker/Dockerfile
-            target: gitea_app
-            suffix: gitea_app
-            rolling: gitea_app
-          - dockerfile: docker/Dockerfile
-            target: mosaico_agent
-            suffix: mosaico_agent
-            rolling: mosaico_agent
-          - dockerfile: docker/Dockerfile
             target: github_action
             suffix: github_action
             rolling: github_action
-          - dockerfile: docker/Dockerfile.lambda
-            target: github_lambda
-            suffix: github_lambda
-            rolling: github_lambda
-          - dockerfile: docker/Dockerfile.lambda
-            target: gitlab_lambda
-            suffix: gitlab_lambda
-            rolling: gitlab_lambda
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -229,10 +158,7 @@ jobs:
           push-to-registry: true
 
   finalize:
-    needs: [prepare, publish-pypi, publish-docker]
-    # Not gated on publish-pypi: the bump and the dispatch-path tag are about
-    # this repo's state, not the index. Coupling them meant one PyPI failure
-    # left main on the old version with all images already published (v0.40.0).
+    needs: [prepare, publish-docker]
     if: >-
       always()
       && needs.prepare.result == 'success'
@@ -243,7 +169,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      # Check out the exact commit publish-pypi/publish-docker built from, so
+      # Check out the exact commit publish-docker built from, so
       # the bump commit's parent equals what was actually published. We push
       # to main fast-forward only — if main has moved during the run, we skip
       # the push rather than rebasing onto a newer commit that wasn't built.
@@ -262,13 +188,6 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           resolution-strategy: lowest
-
-      - name: Flag missing PyPI publish
-        if: needs.publish-pypi.result != 'success'
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          echo "::warning::publish-pypi ${{ needs.publish-pypi.result }}; $VERSION is not on PyPI. Images and the version bump went through - re-run publish-pypi once the cause is fixed."
 
       - name: Configure git identity
         run: |
@@ -317,7 +236,7 @@ jobs:
           fi
 
       # The tag is created when the release is published and immutable releases
-      # make it unmovable, so the bump lands on main only. Wheels and images are
+      # make it unmovable, so the bump lands on main only. Images are
       # built after set_pyproject_version, so it's just the tagged tree that lags.
       - name: Note tag/bump commit split (release event only)
         if: github.event_name == 'release' && steps.commit.outputs.bumped == 'true'
